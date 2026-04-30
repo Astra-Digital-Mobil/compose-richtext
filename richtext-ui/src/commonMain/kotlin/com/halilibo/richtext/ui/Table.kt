@@ -9,18 +9,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.halilibo.richtext.ui.ColumnArrangement.Adaptive
 import com.halilibo.richtext.ui.ColumnArrangement.Uniform
@@ -42,12 +48,15 @@ import kotlin.math.roundToInt
 @Immutable
 public data class TableStyle(
   val headerTextStyle: TextStyle? = null,
+  val cellTextStyle: TextStyle? = null,
   val cellPadding: TextUnit? = null,
   val columnArrangement: ColumnArrangement? = null,
   val borderColor: Color? = null,
   val borderStrokeWidth: Float? = null,
+  val borderCornerRadius: Dp? = null,
   val headerBorderColor: Color? = null,
   val dividerStyle: DividerStyle? = null,
+  val headerBackgroundColor: Color? = null
 ) {
   public companion object {
     public val Default: TableStyle = TableStyle()
@@ -62,23 +71,34 @@ public sealed interface ColumnArrangement {
 public sealed interface DividerStyle {
   public object Full : DividerStyle
   public object Minimal : DividerStyle
+  public data class Custom(
+    val outerBorder: Boolean = false,
+    val horizontalLines: Boolean = false,
+    val verticalLines: Boolean = false
+  ) : DividerStyle
 }
 
 private val DefaultTableHeaderTextStyle = TextStyle(fontWeight = FontWeight.Bold)
+private val DefaultTableCellTextStyle = TextStyle.Default
 private val DefaultCellPadding = 8.sp
 private val DefaultBorderColor = Color.Unspecified
 private val DefaultColumnArrangement = ColumnArrangement.Uniform
 private const val DefaultBorderStrokeWidth = 1f
 private val DefaultDividerStyle = DividerStyle.Full
+private val DefaultBorderRadius = 0.dp
+private val DefaultHeaderBackgroundColor = Color.Unspecified
 
 internal fun TableStyle.resolveDefaults() = TableStyle(
-    headerTextStyle = headerTextStyle ?: DefaultTableHeaderTextStyle,
-    cellPadding = cellPadding ?: DefaultCellPadding,
-    columnArrangement = columnArrangement ?: DefaultColumnArrangement,
-    borderColor = borderColor ?: DefaultBorderColor,
-    borderStrokeWidth = borderStrokeWidth ?: DefaultBorderStrokeWidth,
-    headerBorderColor = headerBorderColor,
-    dividerStyle = dividerStyle ?: DefaultDividerStyle,
+  headerTextStyle = headerTextStyle ?: DefaultTableHeaderTextStyle,
+  cellTextStyle = cellTextStyle ?: DefaultTableCellTextStyle,
+  cellPadding = cellPadding ?: DefaultCellPadding,
+  columnArrangement = columnArrangement ?: DefaultColumnArrangement,
+  borderColor = borderColor ?: DefaultBorderColor,
+  borderStrokeWidth = borderStrokeWidth ?: DefaultBorderStrokeWidth,
+  borderCornerRadius = borderCornerRadius ?: DefaultBorderRadius,
+  headerBorderColor = headerBorderColor,
+  dividerStyle = dividerStyle ?: DefaultDividerStyle,
+  headerBackgroundColor = headerBackgroundColor ?: DefaultHeaderBackgroundColor,
 )
 
 public interface RichTextTableRowScope {
@@ -132,8 +152,8 @@ public fun RichTextScope.Table(
   }
   val columns = remember(header, rows) {
     max(
-        header?.cells?.size ?: 0,
-        rows.maxByOrNull { it.cells.size }?.cells?.size ?: 0
+      header?.cells?.size ?: 0,
+      rows.maxByOrNull { it.cells.size }?.cells?.size ?: 0
     )
   }
   if (columns == 0) {
@@ -141,12 +161,13 @@ public fun RichTextScope.Table(
     return
   }
   val headerStyle = currentTextStyle.merge(tableStyle.headerTextStyle)
+  val cellStyle = currentTextStyle.merge(tableStyle.cellTextStyle)
   val cellPadding = with(LocalDensity.current) {
     tableStyle.cellPadding!!.toDp()
   }
   val cellModifier = Modifier
-      .clipToBounds()
-      .padding(cellPadding)
+    .clipToBounds()
+    .padding(cellPadding)
 
   val styledRows = remember(header, rows, cellModifier) {
     buildList {
@@ -169,10 +190,12 @@ public fun RichTextScope.Table(
         @Suppress("RemoveExplicitTypeArguments")
         row.cells.map<@Composable RichTextScope.() -> Unit, @Composable () -> Unit> { cell ->
           @Composable {
-            BasicRichText(
-              modifier = cellModifier,
-              children = cell
-            )
+            textStyleBackProvider(cellStyle) {
+              BasicRichText(
+                modifier = cellModifier,
+                children = cell
+              )
+            }
           }
         }
       }
@@ -212,9 +235,18 @@ public fun RichTextScope.Table(
         rowOffsets = layoutResult.rowOffsets,
         columnOffsets = layoutResult.columnOffsets,
         borderColor = borderColor,
+        borderRadius = tableStyle.borderCornerRadius!!,
         borderStrokeWidth = tableStyle.borderStrokeWidth,
         headerBorderColor = tableStyle.headerBorderColor ?: borderColor,
         dividerStyle = tableStyle.dividerStyle!!,
+      )
+    },
+    drawHeaderBackgroundDecorations = { height: Float ->
+      Modifier.drawTableHeaderBackground(
+        height = height,
+        hasHeader = header != null,
+        headerBackgroundColor = tableStyle.headerBackgroundColor!!,
+        borderRadius = tableStyle.borderCornerRadius!!,
       )
     },
     modifier = tableModifier
@@ -224,32 +256,114 @@ public fun RichTextScope.Table(
 private fun Modifier.drawTableBorders(
   rowOffsets: List<Float>,
   columnOffsets: List<Float>,
+  borderRadius: Dp,
   borderColor: Color,
   borderStrokeWidth: Float,
   headerBorderColor: Color,
   dividerStyle: DividerStyle,
 ) = drawBehind {
-  // Draw horizontal borders.
-  rowOffsets.forEachIndexed { i, position ->
-    if (dividerStyle is DividerStyle.Full || (i > 0 && i < rowOffsets.size - 1)) {
-      drawLine(
-        if (i == 1) headerBorderColor else borderColor,
-        start = Offset(0f, position),
-        end = Offset(size.width, position),
+  val cornerRadiusPx = borderRadius.toPx()
+  val cornerRadius = CornerRadius(cornerRadiusPx, cornerRadiusPx)
+
+  when (dividerStyle) {
+
+    is DividerStyle.Full -> {
+      drawInnerHorizontalLines(rowOffsets, headerBorderColor, borderColor, borderStrokeWidth)
+      drawInnerVerticalLines(columnOffsets, borderColor, borderStrokeWidth)
+      drawOuterBorders(borderColor, cornerRadius, borderStrokeWidth)
+    }
+
+    is DividerStyle.Custom -> {
+      if (dividerStyle.horizontalLines) drawInnerHorizontalLines(
+        rowOffsets,
+        headerBorderColor,
+        borderColor,
         borderStrokeWidth
+      )
+      if (dividerStyle.verticalLines) drawInnerVerticalLines(
+        columnOffsets,
+        borderColor,
+        borderStrokeWidth
+      )
+      if (dividerStyle.outerBorder) drawOuterBorders(borderColor, cornerRadius, borderStrokeWidth)
+    }
+
+    is DividerStyle.Minimal -> {
+      drawInnerHorizontalLines(rowOffsets, headerBorderColor, borderColor, borderStrokeWidth)
+    }
+  }
+}
+
+private fun DrawScope.drawOuterBorders(
+  borderColor: Color,
+  cornerRadius: CornerRadius,
+  borderStrokeWidth: Float
+) {
+  drawRoundRect(
+    color = borderColor,
+    topLeft = Offset.Zero,
+    size = size,
+    cornerRadius = cornerRadius,
+    style = Stroke(width = borderStrokeWidth),
+  )
+}
+
+private fun DrawScope.drawInnerVerticalLines(
+  columnOffsets: List<Float>,
+  borderColor: Color,
+  borderStrokeWidth: Float
+) {
+  columnOffsets.forEachIndexed { i, position ->
+    if (i in 1 until columnOffsets.size - 1) {
+      drawLine(
+        color = borderColor,
+        start = Offset(position, 0f),
+        end = Offset(position, size.height),
+        strokeWidth = borderStrokeWidth,
       )
     }
   }
+}
 
-  // Draw vertical borders.
-  if (dividerStyle is DividerStyle.Full) {
-    columnOffsets.forEach { position ->
+private fun DrawScope.drawInnerHorizontalLines(
+  rowOffsets: List<Float>,
+  headerBorderColor: Color,
+  borderColor: Color,
+  borderStrokeWidth: Float
+) {
+  rowOffsets.forEachIndexed { i, position ->
+    if (i in 1 until rowOffsets.size - 1) {
       drawLine(
-        borderColor,
-        Offset(position, 0f),
-        Offset(position, size.height),
-        borderStrokeWidth
+        color = if (i == 1) headerBorderColor else borderColor,
+        start = Offset(0f, position),
+        end = Offset(size.width, position),
+        strokeWidth = borderStrokeWidth,
       )
     }
+  }
+}
+
+private fun Modifier.drawTableHeaderBackground(
+  height: Float,
+  hasHeader: Boolean,
+  headerBackgroundColor: Color,
+  borderRadius: Dp,
+) = drawBehind {
+  val cornerRadiusPx = borderRadius.toPx()
+  val cornerRadius = CornerRadius(cornerRadiusPx, cornerRadiusPx)
+
+  if (hasHeader && headerBackgroundColor.isSpecified) {
+    val headerPath = Path().apply {
+      addRoundRect(
+        RoundRect(
+          0f, 0f, size.width, height,
+          topLeftCornerRadius = cornerRadius,
+          topRightCornerRadius = cornerRadius,
+          bottomRightCornerRadius = CornerRadius.Zero,
+          bottomLeftCornerRadius = CornerRadius.Zero,
+        )
+      )
+    }
+    drawPath(headerPath, headerBackgroundColor)
   }
 }
