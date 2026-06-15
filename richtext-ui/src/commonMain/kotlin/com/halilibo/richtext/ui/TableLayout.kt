@@ -8,7 +8,6 @@ import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.unit.Constraints
 import kotlin.math.roundToInt
 
-
 /**
  * The offsets of rows and columns of a [TableLayout], centered inside their spacing.
  *
@@ -27,6 +26,7 @@ internal fun TableLayout(
   rows: List<List<@Composable () -> Unit>>,
   hasHeader: Boolean,
   drawDecorations: (TableLayoutResult) -> Modifier,
+  drawHeaderBackgroundDecorations: (Float) -> Modifier,
   cellSpacing: Float,
   tableMeasurer: TableMeasurer,
   modifier: Modifier = Modifier
@@ -53,6 +53,14 @@ internal fun TableLayout(
       var y = cellSpacing
       val rowOffsets = mutableListOf<Float>()
       val columnOffsets = mutableListOf<Float>()
+
+      if (measurements.rowHeights.isNotEmpty()) {
+        subcompose("header_background") {
+          Box(modifier = drawHeaderBackgroundDecorations(measurements.rowHeights[0] + 2 * cellSpacing))
+        }.single()
+          .measure(Constraints.fixed(tableWidth, tableHeight))
+          .placeRelative(0, 0)
+      }
 
       measurements.rowPlaceables.forEachIndexed { rowIndex, cellPlaceables ->
         rowOffsets += y - cellSpacing / 2f
