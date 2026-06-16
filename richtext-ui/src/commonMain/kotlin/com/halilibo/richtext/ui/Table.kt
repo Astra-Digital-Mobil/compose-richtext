@@ -16,7 +16,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.isSpecified
@@ -71,11 +70,7 @@ public sealed interface ColumnArrangement {
 public sealed interface DividerStyle {
   public object Full : DividerStyle
   public object Minimal : DividerStyle
-  public data class Custom(
-    val outerBorder: Boolean = false,
-    val horizontalLines: Boolean = false,
-    val verticalLines: Boolean = false
-  ) : DividerStyle
+  public object BorderAndHorizontal : DividerStyle
 }
 
 private val DefaultTableHeaderTextStyle = TextStyle(fontWeight = FontWeight.Bold)
@@ -235,7 +230,7 @@ public fun RichTextScope.Table(
         rowOffsets = layoutResult.rowOffsets,
         columnOffsets = layoutResult.columnOffsets,
         borderColor = borderColor,
-        borderRadius = tableStyle.borderCornerRadius!!,
+        borderRadius = tableStyle.borderCornerRadius,
         borderStrokeWidth = tableStyle.borderStrokeWidth,
         headerBorderColor = tableStyle.headerBorderColor ?: borderColor,
         dividerStyle = tableStyle.dividerStyle!!,
@@ -256,90 +251,80 @@ public fun RichTextScope.Table(
 private fun Modifier.drawTableBorders(
   rowOffsets: List<Float>,
   columnOffsets: List<Float>,
-  borderRadius: Dp,
+  borderRadius: Dp? = null,
   borderColor: Color,
   borderStrokeWidth: Float,
   headerBorderColor: Color,
   dividerStyle: DividerStyle,
 ) = drawBehind {
-  val cornerRadiusPx = borderRadius.toPx()
+  val cornerRadiusPx = borderRadius?.toPx() ?: 0f
   val cornerRadius = CornerRadius(cornerRadiusPx, cornerRadiusPx)
 
+  // 1. Inner dividers — visual treatment depends on the divider style.
   when (dividerStyle) {
-
     is DividerStyle.Full -> {
-      drawInnerHorizontalLines(rowOffsets, headerBorderColor, borderColor, borderStrokeWidth)
-      drawInnerVerticalLines(columnOffsets, borderColor, borderStrokeWidth)
-      drawOuterBorders(borderColor, cornerRadius, borderStrokeWidth)
+      val innerColor = borderColor
+
+      rowOffsets.forEachIndexed { i, position ->
+        if (i in 1 until rowOffsets.size - 1) {
+          drawLine(
+            color = if (i == 1) headerBorderColor else innerColor,
+            start = Offset(0f, position),
+            end = Offset(size.width, position),
+            strokeWidth = borderStrokeWidth,
+          )
+        }
+      }
+
+      columnOffsets.forEachIndexed { i, position ->
+        if (i in 1 until columnOffsets.size - 1) {
+          drawLine(
+            color = innerColor,
+            start = Offset(position, 0f),
+            end = Offset(position, size.height),
+            strokeWidth = borderStrokeWidth,
+          )
+        }
+      }
     }
 
-    is DividerStyle.Custom -> {
-      if (dividerStyle.horizontalLines) drawInnerHorizontalLines(
-        rowOffsets,
-        headerBorderColor,
-        borderColor,
-        borderStrokeWidth
-      )
-      if (dividerStyle.verticalLines) drawInnerVerticalLines(
-        columnOffsets,
-        borderColor,
-        borderStrokeWidth
-      )
-      if (dividerStyle.outerBorder) drawOuterBorders(borderColor, cornerRadius, borderStrokeWidth)
+    is DividerStyle.BorderAndHorizontal -> {
+      rowOffsets.forEachIndexed { i, position ->
+        if (i in 1 until rowOffsets.size - 1) {
+          drawLine(
+            color = if (i == 1) headerBorderColor else borderColor,
+            start = Offset(0f, position),
+            end = Offset(size.width, position),
+            strokeWidth = borderStrokeWidth,
+          )
+        }
+      }
     }
 
     is DividerStyle.Minimal -> {
-      drawInnerHorizontalLines(rowOffsets, headerBorderColor, borderColor, borderStrokeWidth)
+      // Inner horizontal dividers only — no outer border, no verticals.
+      rowOffsets.forEachIndexed { i, position ->
+        if (i in 1 until rowOffsets.size - 1) {
+          drawLine(
+            color = if (i == 1) headerBorderColor else borderColor,
+            start = Offset(0f, position),
+            end = Offset(size.width, position),
+            strokeWidth = borderStrokeWidth,
+          )
+        }
+      }
     }
   }
-}
 
-private fun DrawScope.drawOuterBorders(
-  borderColor: Color,
-  cornerRadius: CornerRadius,
-  borderStrokeWidth: Float
-) {
-  drawRoundRect(
-    color = borderColor,
-    topLeft = Offset.Zero,
-    size = size,
-    cornerRadius = cornerRadius,
-    style = Stroke(width = borderStrokeWidth),
-  )
-}
-
-private fun DrawScope.drawInnerVerticalLines(
-  columnOffsets: List<Float>,
-  borderColor: Color,
-  borderStrokeWidth: Float
-) {
-  columnOffsets.forEachIndexed { i, position ->
-    if (i in 1 until columnOffsets.size - 1) {
-      drawLine(
-        color = borderColor,
-        start = Offset(position, 0f),
-        end = Offset(position, size.height),
-        strokeWidth = borderStrokeWidth,
-      )
-    }
-  }
-}
-
-private fun DrawScope.drawInnerHorizontalLines(
-  rowOffsets: List<Float>,
-  headerBorderColor: Color,
-  borderColor: Color,
-  borderStrokeWidth: Float
-) {
-  rowOffsets.forEachIndexed { i, position ->
-    if (i in 1 until rowOffsets.size - 1) {
-      drawLine(
-        color = if (i == 1) headerBorderColor else borderColor,
-        start = Offset(0f, position),
-        end = Offset(size.width, position),
-        strokeWidth = borderStrokeWidth,
-      )
-    }
+  // 2. Outer rounded border — drawn last so it sits on top of the header fill and inner dividers.
+  if (dividerStyle is DividerStyle.Full || dividerStyle is DividerStyle.BorderAndHorizontal) {
+    drawRoundRect(
+      color = borderColor,
+      topLeft = Offset.Zero,
+      size = size,
+      cornerRadius = cornerRadius,
+      style = Stroke(width = borderStrokeWidth),
+    )
   }
 }
 
@@ -352,6 +337,7 @@ private fun Modifier.drawTableHeaderBackground(
   val cornerRadiusPx = borderRadius.toPx()
   val cornerRadius = CornerRadius(cornerRadiusPx, cornerRadiusPx)
 
+  // 1. Header background fill — top corners rounded, bottom flat so it butts against row 1.
   if (hasHeader && headerBackgroundColor.isSpecified) {
     val headerPath = Path().apply {
       addRoundRect(
